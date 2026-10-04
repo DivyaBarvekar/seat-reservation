@@ -1,5 +1,12 @@
 server:
   port: ${PORT:8080}
+  tomcat:
+    # Bounded worker pool: at most this many requests compete for DB connections at once;
+    # the rest wait in Tomcat's connection queue instead of piling up on Hikari and timing out.
+    threads:
+      max: ${TOMCAT_MAX_THREADS:200}
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:10000}
+    accept-count: ${TOMCAT_ACCEPT_COUNT:2000}
 
 spring:
   application:
@@ -9,8 +16,11 @@ spring:
     username: ${DATABASE_USER:app}
     password: ${DATABASE_PASSWORD:app}
     hikari:
-      maximum-pool-size: 10
-      connection-timeout: 3000
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      # Long enough to ride out a burst queue, short enough to fail closed (503) if the DB is gone.
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:10000}
+      # A request never waits forever on a row lock; a timeout surfaces as a clean 409 contention.
+      connection-init-sql: SET lock_timeout = '5s'
   jackson:
     property-naming-strategy: SNAKE_CASE
 

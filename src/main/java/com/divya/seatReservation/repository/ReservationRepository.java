@@ -7,7 +7,9 @@ import org.springframework.stereotype.Repository;
 import java.sql.Array;
 import java.sql.PreparedStatement;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -65,16 +67,22 @@ public class ReservationRepository {
                 """, showId, userId, n, limit) == 1;
     }
 
-    /** Number of the given seat labels that exist for the show (seats are never deleted). */
-    public int countExistingSeats(UUID showId, List<String> seats) {
-        Integer n = jdbc.query(con -> {
+    /**
+     * Current status of each requested seat that exists (seats are never deleted), as a plain
+     * non-locking read. Used only to decline early — it never grants a seat; claimSeat does that.
+     */
+    public Map<String, String> findSeatStatuses(UUID showId, List<String> seats) {
+        Map<String, String> statuses = new HashMap<>();
+        jdbc.query(con -> {
             PreparedStatement ps = con.prepareStatement(
-                    "SELECT count(*) FROM seats WHERE show_id = ? AND seat_no = ANY(?)");
+                    "SELECT seat_no, status FROM seats WHERE show_id = ? AND seat_no = ANY(?)");
             ps.setObject(1, showId);
             ps.setArray(2, con.createArrayOf("text", seats.toArray()));
             return ps;
-        }, rs -> rs.next() ? rs.getInt(1) : 0);
-        return n == null ? 0 : n;
+        }, rs -> {
+            statuses.put(rs.getString("seat_no"), rs.getString("status"));
+        });
+        return statuses;
     }
 
     public void insertReservation(UUID id, UUID showId, String userId, List<String> seats, long amountPaise) {

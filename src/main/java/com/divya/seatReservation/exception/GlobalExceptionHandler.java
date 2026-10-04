@@ -3,7 +3,13 @@ package com.divya.seatReservation.exception;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.RecoverableDataAccessException;
+import org.springframework.dao.TransientDataAccessResourceException;
+import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.transaction.TransactionSystemException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.ErrorResponse;
@@ -42,6 +48,24 @@ public class GlobalExceptionHandler {
         log.warn("Lock conflict, request declined: {}", e.getMostSpecificCause().getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ErrorBody("contention", "request conflicted with another; please retry"));
+    }
+
+    // DB unreachable, connection lost mid-request, or pool exhausted: fail closed with a
+    // retryable 503. If the connection dropped during COMMIT the outcome is unknown to us,
+    // which is exactly what the idempotency key is for: a retry with the same key either
+    // replays the reservation that did commit or makes it now.
+    //   CannotCreateTransactionException   - @Transactional couldn't get a connection
+    //   DataAccessResourceFailureException - connection refused/killed (incl. CannotGetJdbcConnectionException)
+    //   TransientDataAccessResourceException, RecoverableDataAccessException - transient connection errors
+    //   TransactionSystemException         - commit/rollback failed on a dead connection
+    @ExceptionHandler({CannotCreateTransactionException.class, DataAccessResourceFailureException.class,
+            TransientDataAccessResourceException.class, RecoverableDataAccessException.class,
+            TransactionSystemException.class})
+    public ResponseEntity<ErrorBody> handleDbUnavailable(Exception e) {
+        log.warn("Database unavailable, request rejected: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, "1")
+                .body(new ErrorBody("unavailable", "service temporarily unavailable; please retry"));
     }
 
     @ExceptionHandler(Exception.class)

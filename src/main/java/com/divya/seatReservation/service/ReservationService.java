@@ -15,7 +15,9 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
@@ -41,6 +43,7 @@ public class ReservationService {
 
     private final ShowRepository shows;
     private final ReservationRepository repo;
+    private final Map<UUID, Show> showCache = new ConcurrentHashMap<>();
 
     public ReservationService(ShowRepository shows, ReservationRepository repo) {
         this.shows = shows;
@@ -51,7 +54,7 @@ public class ReservationService {
     public Result reserve(UUID showId, String userId, List<String> requestedSeats, String idemKey) {
         validateKey(idemKey);
         List<String> seats = normalise(requestedSeats);   // sorted => deterministic lock order
-        Show show = shows.findShow(showId).orElseThrow(() -> ApiException.notFound("show not found"));
+        Show show = findShow(showId);
         String hash = requestHash(showId, seats);
 
         // 1. Idempotency: first writer of (user, key) wins; everyone else replays or is rejected.
@@ -59,8 +62,18 @@ public class ReservationService {
             return new Result(replay(userId, idemKey, hash), true);
         }
 
-        if (repo.countExistingSeats(showId, seats) != seats.size()) {
+        // Fast decline. In an on-sale burst most requests lose, and this lets them fail after one
+        // cheap read instead of taking the per-user lock and writing a reservation first.
+        // Safe because it can only decline: a seat seen as available may still be lost in
+        // step 3, and only the conditional UPDATE there can grant one.
+        Map<String, String> statuses = repo.findSeatStatuses(showId, seats);
+        if (statuses.size() != seats.size()) {
             throw ApiException.badRequest("one or more seats do not exist for this show");
+        }
+        for (String seat : seats) {
+            if (!statuses.get(seat).equals("available")) {
+                throw ApiException.conflict("seat_taken", "seat " + seat + " is not available");
+            }
         }
 
         // 2. Per-user limit, enforced atomically in the database.
@@ -111,6 +124,15 @@ public class ReservationService {
         repo.markCancelled(reservationId);
 
         return new ReservationResponse(r.reservationId(), r.showId(), r.userId(), r.seats(), r.amountPaise(), "cancelled");
+    }
+
+    /** Shows are immutable once created, so caching them is safe; saves a DB round trip per reserve. */
+    private Show findShow(UUID showId) {
+        Show cached = showCache.get(showId);
+        if (cached != null) return cached;
+        Show show = shows.findShow(showId).orElseThrow(() -> ApiException.notFound("show not found"));
+        showCache.put(showId, show);  // only real shows are cached, so random ids can't grow it
+        return show;
     }
 
     private ReservationResponse replay(String userId, String idemKey, String hash) {
