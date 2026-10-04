@@ -1,5 +1,7 @@
 server:
   port: ${PORT:8080}
+  # On redeploy/SIGTERM: stop accepting, let in-flight reservations finish (up to 20s).
+  shutdown: graceful
   tomcat:
     # Bounded worker pool: at most this many requests compete for DB connections at once;
     # the rest wait in Tomcat's connection queue instead of piling up on Hikari and timing out.
@@ -11,8 +13,12 @@ server:
 spring:
   application:
     name: seat-reservation
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   datasource:
-    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/seats}
+    # Either a full JDBC URL in DATABASE_URL (docker-compose), or the parts (Render's blueprint
+    # hands them over individually; its own connection string is postgres://, not JDBC).
+    url: ${DATABASE_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:seats}}
     username: ${DATABASE_USER:app}
     password: ${DATABASE_PASSWORD:app}
     hikari:

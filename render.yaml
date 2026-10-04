@@ -1,0 +1,46 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> pick this repo. Creates the database
+# and the web service, wires them together, and generates the secrets.
+databases:
+  - name: seat-reservation-db
+    plan: free
+    region: singapore
+    databaseName: seats
+    user: app
+    ipAllowList: []          # no public access; the app reaches it over Render's private network
+
+services:
+  - type: web
+    name: seat-reservation
+    runtime: docker
+    # free  = 0.1 CPU, sleeps after 15 min idle (~60s cold start), ~18 req/s under burst.
+    # starter ($7/mo) = 0.5 CPU, always on, ~250 req/s: a 20k burst in ~80s instead of ~20 min.
+    plan: free
+    region: singapore        # same region as the DB: every reservation is ~6 DB round trips
+    dockerfilePath: ./Dockerfile
+    # Render only routes traffic once this returns 200, and it checks the DB (fails closed).
+    healthCheckPath: /actuator/health/readiness
+    autoDeploy: true
+    envVars:
+      - key: DB_HOST
+        fromDatabase: { name: seat-reservation-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: seat-reservation-db, property: port }
+      - key: DB_NAME
+        fromDatabase: { name: seat-reservation-db, property: database }
+      - key: DATABASE_USER
+        fromDatabase: { name: seat-reservation-db, property: user }
+      - key: DATABASE_PASSWORD
+        fromDatabase: { name: seat-reservation-db, property: password }
+      - key: AUTH_SECRET
+        generateValue: true  # random per deploy-environment; never the dev default
+      - key: ADMIN_TOKEN
+        generateValue: true  # copy from the dashboard to run ./burst.sh against the live URL
+      # Small CPU: keep worker threads ~2x the DB pool. Excess requests then queue in Tomcat
+      # (no timeout) instead of in Hikari (10s timeout -> 503). Measured at 0.1 CPU:
+      # 100 threads / 15 conns gave 112 x 503 in a 3k burst; 20 / 10 gave zero.
+      - key: TOMCAT_MAX_THREADS
+        value: "20"
+      - key: TOMCAT_MAX_CONNECTIONS
+        value: "4000"
+      - key: DB_POOL_SIZE
+        value: "10"
