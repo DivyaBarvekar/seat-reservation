@@ -2,6 +2,8 @@ package com.divya.seatReservation.exception;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.ErrorResponse;
@@ -31,6 +33,15 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorBody> handleBadParam(MethodArgumentTypeMismatchException e) {
         return ResponseEntity.badRequest()
                 .body(new ErrorBody("invalid_parameter", e.getName() + " has an invalid format"));
+    }
+
+    // Deadlock / lock timeout. Shouldn't happen given our lock ordering, but if it does the
+    // transaction was rolled back and nothing was reserved: a clean, retryable decline.
+    @ExceptionHandler(PessimisticLockingFailureException.class)
+    public ResponseEntity<ErrorBody> handleLockFailure(PessimisticLockingFailureException e) {
+        log.warn("Lock conflict, request declined: {}", e.getMostSpecificCause().getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorBody("contention", "request conflicted with another; please retry"));
     }
 
     @ExceptionHandler(Exception.class)
