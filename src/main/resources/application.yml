@@ -11,6 +11,13 @@ spring:
     hikari:
       maximum-pool-size: 10
       connection-timeout: 3000
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+
+app:
+  auth:
+    secret: ${AUTH_SECRET:local-dev-secret-change-me-at-least-32-chars}
+    admin-token: ${ADMIN_TOKEN:local-admin-token}
 
 management:
   endpoints:
