@@ -24,12 +24,24 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
 
+logging:
+  structured:
+    # One JSON object per line (Elastic Common Schema): MDC (request_id, user_id) and
+    # key-value pairs from the SLF4J fluent API become JSON fields.
+    format:
+      console: ecs
+
 app:
   auth:
     secret: ${AUTH_SECRET:local-dev-secret-change-me-at-least-32-chars}
     admin-token: ${ADMIN_TOKEN:local-admin-token}
 
 management:
+  metrics:
+    distribution:
+      # Latency buckets for http_server_requests, so p95/p99 can be computed in Prometheus.
+      percentiles-histogram:
+        http.server.requests: true
   endpoints:
     web:
       exposure:

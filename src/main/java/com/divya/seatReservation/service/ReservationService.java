@@ -35,6 +35,7 @@ import java.util.regex.Pattern;
 @Service
 public class ReservationService {
 
+    /** replayed = nothing changed: an idempotent retry of reserve, or a repeat cancel. */
     public record Result(ReservationResponse reservation, boolean replayed) {}
 
     private static final Pattern VALID_SEAT = Pattern.compile("[A-Za-z0-9_-]{1,16}");
@@ -103,14 +104,14 @@ public class ReservationService {
      * cannot deadlock. Cancelling an already-cancelled reservation is a no-op.
      */
     @Transactional
-    public ReservationResponse cancel(UUID reservationId, String userId) {
+    public Result cancel(UUID reservationId, String userId) {
         // 1. Lock the reservation row: two concurrent cancels of the same reservation serialise here.
         ReservationResponse r = repo.findReservationForUpdate(reservationId)
                 .filter(res -> res.userId().equals(userId))  // someone else's => 404, don't reveal it exists
                 .orElseThrow(() -> ApiException.notFound("reservation not found"));
 
         if (r.status().equals("cancelled")) {
-            return r;
+            return new Result(r, true);
         }
 
         // 2. Per-user count first (same order as reserve), then 3. the seats.
@@ -123,7 +124,8 @@ public class ReservationService {
         }
         repo.markCancelled(reservationId);
 
-        return new ReservationResponse(r.reservationId(), r.showId(), r.userId(), r.seats(), r.amountPaise(), "cancelled");
+        return new Result(new ReservationResponse(r.reservationId(), r.showId(), r.userId(), r.seats(),
+                r.amountPaise(), "cancelled"), false);
     }
 
     /** Shows are immutable once created, so caching them is safe; saves a DB round trip per reserve. */

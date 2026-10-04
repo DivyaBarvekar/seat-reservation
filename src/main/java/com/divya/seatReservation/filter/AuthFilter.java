@@ -5,6 +5,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -64,6 +65,7 @@ public class AuthFilter extends OncePerRequestFilter {
             return;
         }
         req.setAttribute(USER_ATTR, user.get());
+        MDC.put("user_id", user.get());  // cleared by RequestIdFilter at the end of the request
         chain.doFilter(req, res);
     }
 
