@@ -38,4 +38,10 @@ public class ReservationController {
         HttpStatus status = result.replayed() ? HttpStatus.OK : HttpStatus.CREATED;
         return ResponseEntity.status(status).body(result.reservation());
     }
+
+    @PostMapping("/reservations/{id}/cancel")
+    public ReservationResponse cancel(@PathVariable UUID id,
+                                      @RequestAttribute(AuthFilter.USER_ATTR) String userId) {
+        return service.cancel(id, userId);
+    }
 }

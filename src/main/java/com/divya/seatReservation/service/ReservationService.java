@@ -84,6 +84,35 @@ public class ReservationService {
         return new Result(new ReservationResponse(reservationId, showId, userId, seats, amount, "confirmed"), false);
     }
 
+    /**
+     * Owner-only cancel. Lock order matches reserve() for the parts they share
+     * (user_show_counts before seats), so a cancel and a reserve by the same user
+     * cannot deadlock. Cancelling an already-cancelled reservation is a no-op.
+     */
+    @Transactional
+    public ReservationResponse cancel(UUID reservationId, String userId) {
+        // 1. Lock the reservation row: two concurrent cancels of the same reservation serialise here.
+        ReservationResponse r = repo.findReservationForUpdate(reservationId)
+                .filter(res -> res.userId().equals(userId))  // someone else's => 404, don't reveal it exists
+                .orElseThrow(() -> ApiException.notFound("reservation not found"));
+
+        if (r.status().equals("cancelled")) {
+            return r;
+        }
+
+        // 2. Per-user count first (same order as reserve), then 3. the seats.
+        repo.decrementUserCount(r.showId(), userId, r.seats().size());
+        int released = repo.releaseSeats(r.showId(), reservationId);
+        if (released != r.seats().size()) {
+            // Would mean seat rows and the reservation disagree; roll back rather than corrupt counts.
+            throw new IllegalStateException("reservation " + reservationId + " owns " + released
+                    + " seats, expected " + r.seats().size());
+        }
+        repo.markCancelled(reservationId);
+
+        return new ReservationResponse(r.reservationId(), r.showId(), r.userId(), r.seats(), r.amountPaise(), "cancelled");
+    }
+
     private ReservationResponse replay(String userId, String idemKey, String hash) {
         IdempotencyRecord rec = repo.findIdempotencyKey(userId, idemKey)
                 .orElseThrow(() -> new IllegalStateException("idempotency key vanished after conflict"));

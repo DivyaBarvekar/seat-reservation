@@ -105,9 +105,39 @@ public class ReservationRepository {
                 """, reservationId, userId, showId, seat) == 1;
     }
 
+    /**
+     * Returns seats to 'available', but ONLY those still owned by this reservation.
+     * A seat that has since been re-booked by someone else points at a different
+     * reservation_id and is untouched — so a release can never resurrect or steal it.
+     */
+    public int releaseSeats(UUID showId, UUID reservationId) {
+        return jdbc.update("""
+                UPDATE seats SET status = 'available', reservation_id = NULL, user_id = NULL
+                WHERE show_id = ? AND reservation_id = ? AND status = 'confirmed'
+                """, showId, reservationId);
+    }
+
+    public void decrementUserCount(UUID showId, String userId, int n) {
+        jdbc.update("UPDATE user_show_counts SET held = held - ? WHERE show_id = ? AND user_id = ?",
+                n, showId, userId);
+    }
+
+    public void markCancelled(UUID reservationId) {
+        jdbc.update("UPDATE reservations SET status = 'cancelled' WHERE id = ?", reservationId);
+    }
+
+    /** Same as findReservation, but row-locks the reservation so concurrent cancels serialise. */
+    public Optional<ReservationResponse> findReservationForUpdate(UUID id) {
+        return queryReservation("SELECT id, show_id, user_id, seats, amount_paise, status FROM reservations WHERE id = ? FOR UPDATE", id);
+    }
+
     public Optional<ReservationResponse> findReservation(UUID id) {
+        return queryReservation("SELECT id, show_id, user_id, seats, amount_paise, status FROM reservations WHERE id = ?", id);
+    }
+
+    private Optional<ReservationResponse> queryReservation(String sql, UUID id) {
         return jdbc.query(
-                "SELECT id, show_id, user_id, seats, amount_paise, status FROM reservations WHERE id = ?",
+                sql,
                 (rs, i) -> {
                     Array arr = rs.getArray("seats");
                     List<String> seats = Arrays.asList((String[]) arr.getArray());
