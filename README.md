@@ -4,7 +4,10 @@ A seat-reservation API for a ticket on-sale: many buyers, a few hot seats, retri
 guarantee that **no seat is ever sold twice**. Spring Boot 4 + PostgreSQL, plain SQL via
 `JdbcTemplate`, Flyway migrations, Prometheus metrics, JSON logs.
 
-- **Live URL:** `<LIVE_URL>` <!-- TODO: fill in after the Render deploy -->
+- **Live URL:** https://seat-reservation-f9y0.onrender.com
+  ([readiness](https://seat-reservation-f9y0.onrender.com/actuator/health/readiness) ·
+  [metrics](https://seat-reservation-f9y0.onrender.com/actuator/prometheus))
+- **Live logs under load:** [screen recording of a burst against the live URL](https://drive.google.com/file/d/1muDyrB4Oo0TD2fPyLCOcWMT4bwmmwkjh/view?usp=sharing)
 - **Design write-up:** [WRITEUP.md](WRITEUP.md) — the atomic decision, idempotency, holds,
   consistency under partition, what pages at 2am.
 
@@ -146,7 +149,9 @@ serving a request carries `request_id` (from the caller's `X-Request-Id`, or gen
 back in the response header) and `user_id`. Each request gets an access line (`method`, `path`,
 `status`, `duration_ms`) and each reservation outcome a line (`reservation confirmed` / `declined`
 with `reason` / `replayed` / `cancelled`). On Render: service → **Logs**.
-<!-- TODO: add the link to the screen recording of live logs under load -->
+
+Render's logs aren't public, so here is a
+[screen recording of the live logs during a burst against the live URL](https://drive.google.com/file/d/1muDyrB4Oo0TD2fPyLCOcWMT4bwmmwkjh/view?usp=sharing).
 
 ## Configuration
 

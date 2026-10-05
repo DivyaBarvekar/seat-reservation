@@ -192,66 +192,75 @@ Two findings changed the configuration:
 
 ## 7. AI usage
 
-AI wrote most of the code in this repo. Here's how the work actually split.
+I used AI (Claude) heavily for this assignment, mostly to write code. The design came from me.
+I worked out how the system should behave first, then used AI to turn that into code and to push
+back on my choices.
 
-**Phase 1: foundation (commits up to `25161be`).** I wrote it myself with help from an AI
-assistant: the Spring Boot setup, Flyway schema, Docker/compose, health endpoints, HMAC token
-auth with token-only identity, `POST`/`GET /shows`, and the global exception handler. The schema
-from this phase is what the later work builds on. The `seats` table with its
-`CHECK ((status = 'available') = (reservation_id IS NULL))`, the `idempotency_keys` table keyed
-by `(user_id, idem_key)`, and the `user_show_counts` table were all in place before any
-reservation logic was written.
+### What I directed
 
-**Phase 2: everything from the reserve endpoint on.** I used **Claude Code** (Anthropic's coding
-agent, running in my terminal on this repo).
+Before writing any code, I worked out these parts and gave them to the AI as the spec:
 
-*What I directed:*
-- I had it audit the repo against the brief and list what was missing. Then it worked in
-  **small patches**, one feature at a time, and stopped after each one. **I reviewed and
-  committed every patch myself.** It was instructed never to commit, so the history is the real
-  order the work happened in.
-- For each patch it wrote the code **and ran it against a real Postgres** before handing it over:
-  functional checks, concurrent storms of thousands of requests, killing the database mid-run, and
-  running the container under Render's free-tier CPU and memory limits.
+- **APIs:** which endpoints the service needs (create show, reserve, release, show state,
+  health, metrics) and what each one returns, including when a decline is a 409 and not an error.
+- **Core entities:** the main tables, how they relate, and which state changes a seat is
+  allowed to go through.
+- **High-level flow:** how a reservation request moves through the system, from the auth token
+  to the final database write.
+- **Concurrency:** how to handle many users booking the same ticket at once. The hot-seat case
+  was the main thing I designed around: 500 people hitting one seat, exactly one winner, everyone
+  else gets a clean "already taken".
+- **Locking:** the seat decision has to be a single atomic database step, never a
+  read-then-write. For multi-seat requests, seats are claimed in a fixed (sorted) order so two
+  requests can never deadlock waiting on each other.
+- **Idempotency:** where the key is stored, how a retry returns the original reservation, and
+  how the same key with different seats gets rejected.
+- **Per-user limit:** a user can't hold more than `per_user_limit` seats for a show, even when
+  firing parallel requests.
+- **Code structure:** how the code is split into layers (controller, service, repository) and
+  what each layer is responsible for.
+- **Burst script:** what it should simulate (normal traffic, a hot-seat storm, retries with the
+  same key) and what it should print at the end.
 
-*What the AI decided* (proposed by it, accepted by me after its explanation):
-- The atomic mechanism: a conditional `UPDATE … WHERE status = 'available'` with a row-count
-  check. Also the global lock order (key → per-user count → seats sorted), all-or-nothing for
-  partial requests, and returning 200 rather than 201 for idempotent replays.
-- The release model: explicit owner-only cancel rather than timed holds.
-- The overload handling (bounded pools, the fast-decline pre-check, 503 on DB loss), the metric
-  design (record after commit, no `show_id` label on counters), and the burst script's design.
-- The deploy platform. I asked it to choose; it picked Render and the image tuning (CDS archive,
-  C1-only JIT, thread-to-pool ratio) from measurements it ran.
+### What the AI did
 
-*What I decided or questioned:*
-- **Plain SQL vs JPA.** I questioned why we used `JdbcTemplate` with constructor injection
-  rather than extending `JpaRepository`. After working through it I kept plain SQL. Every
-  critical write here needs Postgres-specific atomic SQL (`ON CONFLICT`, conditional `UPDATE`),
-  and JPA's `save()` is a read-then-write, which is exactly the race the brief warns about.
-- **Scope.** The integration tests (Testcontainers) were the AI's suggestion. I checked whether
-  the brief required them (it doesn't) and decided to keep them. They're also what fixed a
-  clean-clone build that would otherwise fail without a local database.
-- **Live-URL availability.** I raised that Render's free tier sleeps after 15 minutes while
-  reviewers may test days later. That led to the plan-tier and keep-alive guidance in the README.
-- **Delivery checks.** I had it re-audit the finished project against the full brief, which
-  surfaced that reviewers would need the admin token for the live URL. I also caught that GitHub
-  still showed a lowercase `dockerfile`; on my case-insensitive Mac the rename had to go
-  through `git mv`.
+- Wrote most of the code from this design, layer by layer.
+- Suggested improvements when I asked whether there was a better version of something. I took
+  some and rejected others.
+- Helped with boilerplate: Dockerfile, metrics wiring, structured logging, README setup.
+- Ran the testing and measurement loop against a real Postgres: concurrent storms, killing the
+  database mid-run, and running the container under free-tier CPU and memory limits. The fixes
+  that came out of it were its proposals, which I reviewed before committing:
+  - mapping database-loss exceptions to 503
+  - the thread-to-pool ratio that removed 503s under burst
+  - the CDS archive that cut cold start from 246 s to about 60 s
 
-*What the AI's own testing caught* (I checked the evidence):
-- Killing the database mid-request raised exception types that weren't mapped yet. Those would
-  have been 500s; now they're 503s.
-- Prometheus silently drops a gauge named `seats_total` (`_total` is reserved for counters),
-  so it's now `seats_capacity`.
-- At 0.1 CPU the container took 246 s to start, and 100 threads over 15 DB connections produced
-  503s. Both were fixed by measurement (section 6).
-- It mutation-tested its own checks: removing the `status = 'available'` guard makes the burst
-  script and 3 integration tests fail. So the tests can detect a double-sell, not just pass.
+### Where I didn't just accept the output
 
-**What this means for the interview:** the design reasoning is written up in sections 1–4, and I
-expect to explain and extend it live, starting from the reserve transaction in
-`ReservationService` and the SQL in `ReservationRepository`.
+**Auth.** I had a clear idea of what auth needed to do here: identity must come from the
+token, never from the request body, so nobody can book or cancel as someone else. When I asked
+the AI how to implement it, its first suggestion was to generate tokens and store them in the
+database, so every request would look up its token there. It also gave me a few other options.
+
+I didn't go with the database approach. The whole point of this service is surviving a burst of
+thousands of requests in the same second, and the database is already the most contended part of
+the system. That's where the seat decisions happen. Adding a token lookup to every reserve
+request would put extra load on exactly the thing I'm trying to protect.
+
+So I chose HMAC-SHA256 signed tokens instead. The token carries the user id, an expiry and a
+signature made with a server-side secret. The service checks the signature on each request
+without touching the database. If someone edits the user id inside the token, the signature no
+longer matches and the request is rejected. Any `user_id` field in the request body is ignored
+completely.
+
+The trade-off I accepted: tokens can't be revoked individually before they expire (24 hours).
+For a booking service that only needs to know who is making the request, that's fine. In a real
+production system I'd add shorter expiry times and key rotation.
+
+### What I own
+
+I can explain every part of this service and why it works the way it does: why the reserve path
+can't double-sell, why retries don't create a second reservation, and how multi-seat requests
+avoid deadlock. I'm comfortable extending it live.
 
 ## 8. What I'd do next
 

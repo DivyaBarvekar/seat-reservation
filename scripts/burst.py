@@ -28,6 +28,7 @@ import collections
 import json
 import os
 import random
+import socket
 import ssl
 import sys
 import time
@@ -49,6 +50,14 @@ class Client:
         self.port = u.port or (443 if self.tls else 80)
         self.ssl = ssl.create_default_context() if self.tls else None
         self.timeout = timeout
+        self.addr = None  # resolved once; see resolve()
+
+    async def resolve(self):
+        """Look the host up ONCE. Resolving per connection makes hundreds of concurrent DNS
+        lookups, which the OS resolver (notably macOS) starts failing - a client-side error
+        that has nothing to do with the service. TLS still verifies against the hostname."""
+        infos = await asyncio.get_running_loop().getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
+        self.addr = infos[0][4][0]
 
     async def request(self, method, path, body=None, headers=None):
         return await asyncio.wait_for(self._request(method, path, body, headers or {}), self.timeout)
@@ -61,7 +70,7 @@ class Client:
             h["Content-Type"] = "application/json"
         h.update(headers)
         reader, writer = await asyncio.open_connection(
-            self.host, self.port, ssl=self.ssl, server_hostname=self.host if self.tls else None)
+            self.addr or self.host, self.port, ssl=self.ssl, server_hostname=self.host if self.tls else None)
         try:
             head = f"{method} {self.prefix}{path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in h.items())
             writer.write(head.encode() + b"\r\n" + data)
@@ -195,6 +204,7 @@ async def main(a):
     run = uuid.uuid4().hex[:8]
     rep = Report()
     print(f"burst run {run} -> {a.base_url}")
+    await c.resolve()
 
     # -- setup: health, show, tokens, metrics baseline
     st, _ = await c.request("GET", "/actuator/health/readiness")
@@ -217,11 +227,19 @@ async def main(a):
     sem = asyncio.Semaphore(a.concurrency)
 
     async def mint(u):
-        async with sem:
-            s, b = await c.request("POST", "/auth/token", {"user": u})
-            if s != 200:
-                sys.exit(f"token for {u} failed: {s} {b}")
-            return u, b["token"]
+        # Setup, not the test: retry transient network errors so they can't abort the run.
+        for attempt in range(5):
+            try:
+                async with sem:
+                    s, b = await c.request("POST", "/auth/token", {"user": u})
+                break
+            except (OSError, asyncio.TimeoutError) as e:
+                if attempt == 4:
+                    sys.exit(f"token for {u} failed after retries: {type(e).__name__}: {e}")
+                await asyncio.sleep(0.5 * (attempt + 1))
+        if s != 200:
+            sys.exit(f"token for {u} failed: {s} {b}")
+        return u, b["token"]
     tokens = dict(await asyncio.gather(*(mint(u) for u in users)))
 
     async def scrape():
