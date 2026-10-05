@@ -223,6 +223,14 @@ class ReservationIntegrationTests {
     }
 
     @Test
+    void rootUrlDescribesTheService() {
+        Resp r = send("GET", "/", null, null);
+        assertThat(r.status).isEqualTo(200);
+        assertThat(r.body.get("service")).isEqualTo("seat-reservation");
+        assertThat(((Map<?, ?>) r.body.get("endpoints")).containsKey("POST /shows/{id}/reserve")).isTrue();
+    }
+
+    @Test
     void metricsCountOnlyWhatActuallyHappened() {
         String show = createShow(seats(4), 4);
         double confirmed = counter("reservations.confirmed", null);
